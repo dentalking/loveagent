@@ -3,18 +3,78 @@ import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { supabase } from '../lib/supabase';
 
+const NOTIFICATION_SETTINGS_KEY = '@notification_settings';
+
+type NotificationSettings = {
+  pushEnabled: boolean;
+  matchNotifications: boolean;
+  messageNotifications: boolean;
+  matchAcceptedNotifications: boolean;
+};
+
+// Get notification settings from AsyncStorage
+async function getNotificationSettings(): Promise<NotificationSettings> {
+  try {
+    const stored = await AsyncStorage.getItem(NOTIFICATION_SETTINGS_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch {
+    // Return defaults on error
+  }
+  return {
+    pushEnabled: true,
+    matchNotifications: true,
+    messageNotifications: true,
+    matchAcceptedNotifications: true,
+  };
+}
+
 // Configure how notifications are displayed when app is in foreground
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
+  handleNotification: async (notification) => {
+    const settings = await getNotificationSettings();
+    const data = notification.request.content.data;
+    const type = data?.type as string;
+
+    const baseResponse = {
+      shouldShowAlert: false,
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+      shouldShowBanner: false,
+      shouldShowList: false,
+    };
+
+    // Check if notifications are enabled
+    if (!settings.pushEnabled) {
+      return baseResponse;
+    }
+
+    // Check specific notification type settings
+    if (type === 'new_match' && !settings.matchNotifications) {
+      return { ...baseResponse, shouldSetBadge: true };
+    }
+
+    if (type === 'match_accepted' && !settings.matchAcceptedNotifications) {
+      return { ...baseResponse, shouldSetBadge: true };
+    }
+
+    if (type === 'new_message' && !settings.messageNotifications) {
+      return { ...baseResponse, shouldSetBadge: true };
+    }
+
+    return {
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    };
+  },
 });
 
 export type NotificationType = 'new_match' | 'match_accepted' | 'new_message';
@@ -43,8 +103,8 @@ export function useNotifications(userId: string | undefined) {
 
     // Listen for incoming notifications (foreground)
     notificationListener.current = Notifications.addNotificationReceivedListener(
-      (notification) => {
-        console.log('Notification received:', notification);
+      (_notification) => {
+        // Notification received in foreground
       }
     );
 
@@ -109,7 +169,7 @@ export function useNotifications(userId: string | undefined) {
     );
 
     if (error) {
-      console.error('Failed to save push token:', error);
+      // Failed to save push token
     }
   }
 
@@ -137,7 +197,6 @@ async function registerForPushNotificationsAsync(): Promise<string | null> {
 
   // Must be physical device
   if (!Device.isDevice) {
-    console.log('Push notifications require a physical device');
     return null;
   }
 
@@ -152,7 +211,6 @@ async function registerForPushNotificationsAsync(): Promise<string | null> {
   }
 
   if (finalStatus !== 'granted') {
-    console.log('Push notification permission not granted');
     return null;
   }
 
@@ -163,15 +221,29 @@ async function registerForPushNotificationsAsync(): Promise<string | null> {
       projectId,
     });
     token = tokenResponse.data;
-  } catch (error) {
-    console.error('Failed to get push token:', error);
+  } catch {
+    // Failed to get push token
   }
 
   // Android-specific channel setup
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('default', {
-      name: 'default',
+      name: '기본',
       importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF6B6B',
+    });
+    await Notifications.setNotificationChannelAsync('matches', {
+      name: '매칭 알림',
+      description: '새로운 매칭과 매칭 성사 알림',
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF6B6B',
+    });
+    await Notifications.setNotificationChannelAsync('messages', {
+      name: '메시지 알림',
+      description: '새로운 메시지 알림',
+      importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#FF6B6B',
     });

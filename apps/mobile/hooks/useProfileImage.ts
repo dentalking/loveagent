@@ -3,7 +3,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../lib/supabase';
 import { decode } from 'base64-arraybuffer';
 
-const BUCKET_NAME = 'profiles';
+const BUCKET_NAME = 'profile-images';
 
 export function useProfileImage(userId: string | undefined) {
   const [uploading, setUploading] = useState(false);

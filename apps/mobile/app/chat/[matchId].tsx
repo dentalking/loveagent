@@ -9,16 +9,18 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Image,
 } from 'react-native';
-import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
+import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
 import { useChat, Message } from '../../hooks/useChat';
 import { supabase } from '../../lib/supabase';
 
 export default function ChatScreen() {
-  const { matchId, partnerName } = useLocalSearchParams<{
+  const { matchId, partnerName, partnerImage } = useLocalSearchParams<{
     matchId: string;
     partnerName: string;
+    partnerImage: string;
   }>();
   const { user } = useAuth();
   const router = useRouter();
@@ -27,7 +29,27 @@ export default function ChatScreen() {
     user?.id || ''
   );
   const [inputText, setInputText] = useState('');
+  const [partnerId, setPartnerId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
+
+  // Fetch partner ID from match
+  useEffect(() => {
+    async function fetchPartnerId() {
+      if (!matchId || !user) return;
+
+      const { data } = await supabase
+        .from('matches')
+        .select('user_a_id, user_b_id')
+        .eq('id', matchId)
+        .single();
+
+      if (data) {
+        const id = data.user_a_id === user.id ? data.user_b_id : data.user_a_id;
+        setPartnerId(id);
+      }
+    }
+    fetchPartnerId();
+  }, [matchId, user]);
 
   // Scroll to bottom when new messages arrive
   useEffect(() => {
@@ -37,6 +59,14 @@ export default function ChatScreen() {
       }, 100);
     }
   }, [messages.length]);
+
+  function handleViewProfile() {
+    if (!partnerId || !matchId) return;
+    router.push({
+      pathname: '/profile/[userId]',
+      params: { userId: partnerId, matchId },
+    });
+  }
 
   async function handleSend() {
     if (!inputText.trim()) return;
@@ -58,10 +88,29 @@ export default function ChatScreen() {
     <>
       <Stack.Screen
         options={{
-          title: partnerName || '채팅',
           headerStyle: { backgroundColor: '#FF6B6B' },
           headerTintColor: '#fff',
           headerBackTitle: '뒤로',
+          headerTitle: () => (
+            <TouchableOpacity style={styles.headerTitle} onPress={handleViewProfile}>
+              {partnerImage ? (
+                <Image
+                  source={{ uri: partnerImage }}
+                  style={styles.headerAvatar}
+                />
+              ) : (
+                <View style={styles.headerAvatarPlaceholder}>
+                  <Text style={styles.headerAvatarText}>
+                    {partnerName?.charAt(0) || '?'}
+                  </Text>
+                </View>
+              )}
+              <View>
+                <Text style={styles.headerName}>{partnerName || '채팅'}</Text>
+                <Text style={styles.headerHint}>프로필 보기</Text>
+              </View>
+            </TouchableOpacity>
+          ),
         }}
       />
       <KeyboardAvoidingView
@@ -139,7 +188,14 @@ function MessageBubble({ message, isMe }: { message: Message; isMe: boolean }) {
           {message.content}
         </Text>
       </View>
-      <Text style={[styles.timeText, isMe && styles.timeTextMe]}>{time}</Text>
+      <View style={[styles.messageFooter, isMe && styles.messageFooterMe]}>
+        <Text style={[styles.timeText, isMe && styles.timeTextMe]}>{time}</Text>
+        {isMe && (
+          <Text style={[styles.readStatus, message.is_read && styles.readStatusRead]}>
+            {message.is_read ? '✓✓' : '✓'}
+          </Text>
+        )}
+      </View>
     </View>
   );
 }
@@ -148,6 +204,40 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5',
+  },
+  headerTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    marginRight: 8,
+  },
+  headerAvatarPlaceholder: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  headerAvatarText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  headerName: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  headerHint: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 11,
+    marginTop: 1,
   },
   centered: {
     flex: 1,
@@ -213,16 +303,32 @@ const styles = StyleSheet.create({
   bubbleTextMe: {
     color: '#fff',
   },
+  messageFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    marginLeft: 4,
+    gap: 4,
+  },
+  messageFooterMe: {
+    justifyContent: 'flex-end',
+    marginRight: 4,
+    marginLeft: 0,
+  },
   timeText: {
     fontSize: 11,
     color: '#999',
-    marginTop: 4,
-    marginLeft: 4,
   },
   timeTextMe: {
     textAlign: 'right',
-    marginRight: 4,
-    marginLeft: 0,
+  },
+  readStatus: {
+    fontSize: 11,
+    color: '#999',
+    fontWeight: '600',
+  },
+  readStatusRead: {
+    color: '#4FC3F7',
   },
   inputContainer: {
     flexDirection: 'row',

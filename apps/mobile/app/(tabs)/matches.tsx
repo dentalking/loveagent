@@ -7,10 +7,14 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Image,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../lib/AuthContext';
+import { useUnreadCounts } from '../../hooks/useChat';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
 type Match = {
   id: string;
@@ -24,6 +28,7 @@ type Match = {
     nickname: string;
     birth_year: number;
     location: string;
+    profile_image_url: string | null;
   };
   my_status: string;
   their_status: string;
@@ -36,59 +41,94 @@ export default function MatchesScreen() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [processingIds, setProcessingIds] = useState<Set<string>>(new Set());
+  const unreadCounts = useUnreadCounts(user?.id || '');
 
   const fetchMatches = useCallback(async () => {
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from('matches')
-      .select(`
-        id,
-        compatibility_score,
-        match_reason,
-        is_matched,
-        matched_at,
-        created_at,
-        user_a_id,
-        user_b_id,
-        user_a_status,
-        user_b_status,
-        user_a:users!matches_user_a_id_fkey(id, nickname, birth_year, location),
-        user_b:users!matches_user_b_id_fkey(id, nickname, birth_year, location)
-      `)
-      .or(`user_a_id.eq.${user.id},user_b_id.eq.${user.id}`)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error(error);
+    if (!user) {
+      setLoading(false);
       return;
     }
 
-    const formattedMatches: Match[] = data.map((match: any) => {
-      const isUserA = match.user_a_id === user.id;
-      return {
-        id: match.id,
-        compatibility_score: match.compatibility_score,
-        match_reason: match.match_reason,
-        is_matched: match.is_matched,
-        matched_at: match.matched_at,
-        created_at: match.created_at,
-        other_user: isUserA ? match.user_b : match.user_a,
-        my_status: isUserA ? match.user_a_status : match.user_b_status,
-        their_status: isUserA ? match.user_b_status : match.user_a_status,
-        isUserA,
-      };
-    });
+    try {
+      const { data, error } = await supabase
+        .from('matches')
+        .select(`
+          id,
+          compatibility_score,
+          match_reason,
+          is_matched,
+          matched_at,
+          created_at,
+          user_a_id,
+          user_b_id,
+          user_a_status,
+          user_b_status,
+          user_a:users!matches_user_a_id_fkey(id, nickname, birth_year, location, profile_image_url),
+          user_b:users!matches_user_b_id_fkey(id, nickname, birth_year, location, profile_image_url)
+        `)
+        .or(`user_a_id.eq.${user.id},user_b_id.eq.${user.id}`)
+        .order('created_at', { ascending: false });
 
-    setMatches(formattedMatches);
-    setLoading(false);
+      if (error) {
+        return;
+      }
+
+      const formattedMatches: Match[] = (data || []).map((match) => {
+        const isUserA = match.user_a_id === user.id;
+        return {
+          id: match.id,
+          compatibility_score: match.compatibility_score,
+          match_reason: match.match_reason,
+          is_matched: match.is_matched,
+          matched_at: match.matched_at,
+          created_at: match.created_at,
+          other_user: isUserA ? match.user_b : match.user_a,
+          my_status: isUserA ? match.user_a_status : match.user_b_status,
+          their_status: isUserA ? match.user_b_status : match.user_a_status,
+          isUserA,
+        } as Match;
+      });
+
+      setMatches(formattedMatches);
+    } finally {
+      setLoading(false);
+    }
   }, [user]);
 
+  // Realtime 구독
   useEffect(() => {
+    if (!user) return;
+
     fetchMatches();
-  }, [fetchMatches]);
+
+    const channel: RealtimeChannel = supabase
+      .channel('matches-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'matches',
+        },
+        (payload) => {
+          const record = payload.new as { user_a_id?: string; user_b_id?: string };
+          if (record.user_a_id === user.id || record.user_b_id === user.id) {
+            fetchMatches();
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, fetchMatches]);
 
   async function handleAccept(matchId: string, isUserA: boolean) {
+    if (processingIds.has(matchId)) return;
+
+    setProcessingIds((prev) => new Set(prev).add(matchId));
     const updateField = isUserA ? 'user_a_status' : 'user_b_status';
 
     const { error } = await supabase
@@ -96,12 +136,24 @@ export default function MatchesScreen() {
       .update({ [updateField]: 'accepted' })
       .eq('id', matchId);
 
-    if (!error) {
-      fetchMatches();
+    setProcessingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(matchId);
+      return next;
+    });
+
+    if (error) {
+      Alert.alert('오류', '수락 처리 중 문제가 발생했습니다.');
+      return;
     }
+
+    fetchMatches();
   }
 
   async function handleReject(matchId: string, isUserA: boolean) {
+    if (processingIds.has(matchId)) return;
+
+    setProcessingIds((prev) => new Set(prev).add(matchId));
     const updateField = isUserA ? 'user_a_status' : 'user_b_status';
 
     const { error } = await supabase
@@ -109,9 +161,18 @@ export default function MatchesScreen() {
       .update({ [updateField]: 'rejected' })
       .eq('id', matchId);
 
-    if (!error) {
-      fetchMatches();
+    setProcessingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(matchId);
+      return next;
+    });
+
+    if (error) {
+      Alert.alert('오류', '거절 처리 중 문제가 발생했습니다.');
+      return;
     }
+
+    fetchMatches();
   }
 
   const onRefresh = useCallback(async () => {
@@ -146,6 +207,17 @@ export default function MatchesScreen() {
       params: {
         matchId: match.id,
         partnerName: match.other_user.nickname,
+        partnerImage: match.other_user.profile_image_url || '',
+      },
+    });
+  }
+
+  function handleViewProfile(match: Match) {
+    router.push({
+      pathname: '/profile/[userId]',
+      params: {
+        userId: match.other_user.id,
+        matchId: match.id,
       },
     });
   }
@@ -164,6 +236,9 @@ export default function MatchesScreen() {
           onAccept={handleAccept}
           onReject={handleReject}
           onChat={handleChat}
+          onViewProfile={handleViewProfile}
+          isProcessing={processingIds.has(item.id)}
+          unreadCount={unreadCounts[item.id] || 0}
         />
       )}
     />
@@ -175,11 +250,17 @@ function MatchCard({
   onAccept,
   onReject,
   onChat,
+  onViewProfile,
+  isProcessing,
+  unreadCount,
 }: {
   match: Match;
   onAccept: (id: string, isUserA: boolean) => void;
   onReject: (id: string, isUserA: boolean) => void;
   onChat: (match: Match) => void;
+  onViewProfile: (match: Match) => void;
+  isProcessing: boolean;
+  unreadCount: number;
 }) {
   const age = new Date().getFullYear() - match.other_user.birth_year;
 
@@ -203,23 +284,31 @@ function MatchCard({
 
   return (
     <View style={styles.card}>
-      <View style={styles.cardHeader}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>
-            {match.other_user.nickname.charAt(0)}
-          </Text>
-        </View>
+      <TouchableOpacity style={styles.cardHeader} onPress={() => onViewProfile(match)}>
+        {match.other_user.profile_image_url ? (
+          <Image
+            source={{ uri: match.other_user.profile_image_url }}
+            style={styles.avatarImage}
+          />
+        ) : (
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>
+              {match.other_user.nickname.charAt(0)}
+            </Text>
+          </View>
+        )}
         <View style={styles.userInfo}>
           <Text style={styles.nickname}>{match.other_user.nickname}</Text>
           <Text style={styles.details}>
             {age}세 · {match.other_user.location}
           </Text>
+          <Text style={styles.viewProfileHint}>프로필 보기 ›</Text>
         </View>
         <View style={styles.scoreContainer}>
           <Text style={styles.scoreValue}>{Math.round(match.compatibility_score)}%</Text>
           <Text style={styles.scoreLabel}>호환</Text>
         </View>
-      </View>
+      </TouchableOpacity>
 
       {match.match_reason && (
         <Text style={styles.reason}>{match.match_reason}</Text>
@@ -234,16 +323,18 @@ function MatchCard({
       {match.my_status === 'pending' && (
         <View style={styles.actions}>
           <TouchableOpacity
-            style={styles.rejectButton}
+            style={[styles.rejectButton, isProcessing && styles.buttonDisabled]}
             onPress={() => onReject(match.id, match.isUserA)}
+            disabled={isProcessing}
           >
-            <Text style={styles.rejectText}>거절</Text>
+            <Text style={styles.rejectText}>{isProcessing ? '...' : '거절'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.acceptButton}
+            style={[styles.acceptButton, isProcessing && styles.buttonDisabled]}
             onPress={() => onAccept(match.id, match.isUserA)}
+            disabled={isProcessing}
           >
-            <Text style={styles.acceptText}>수락</Text>
+            <Text style={styles.acceptText}>{isProcessing ? '...' : '수락'}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -251,6 +342,13 @@ function MatchCard({
       {match.is_matched && (
         <TouchableOpacity style={styles.chatButton} onPress={() => onChat(match)}>
           <Text style={styles.chatText}>💬 대화하기</Text>
+          {unreadCount > 0 && (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadText}>
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </Text>
+            </View>
+          )}
         </TouchableOpacity>
       )}
     </View>
@@ -307,6 +405,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  avatarImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+  },
   avatarText: {
     color: '#fff',
     fontSize: 24,
@@ -325,6 +428,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 2,
+  },
+  viewProfileHint: {
+    fontSize: 12,
+    color: '#FF6B6B',
+    marginTop: 4,
   },
   scoreContainer: {
     alignItems: 'center',
@@ -386,6 +494,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
   acceptText: {
     color: '#fff',
     fontSize: 16,
@@ -398,10 +509,31 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
+    flexDirection: 'row',
+    position: 'relative',
   },
   chatText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  unreadBadge: {
+    position: 'absolute',
+    top: -6,
+    right: 12,
+    backgroundColor: '#FF6B6B',
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  unreadText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
   },
 });

@@ -11,6 +11,7 @@ import {
   ActionSheetIOS,
   Platform,
 } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { useProfileImage } from '../../hooks/useProfileImage';
@@ -32,6 +33,7 @@ type ResponseSummary = {
 };
 
 export default function ProfileScreen() {
+  const router = useRouter();
   const { user, signOut } = useAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [responses, setResponses] = useState<ResponseSummary[]>([]);
@@ -40,41 +42,49 @@ export default function ProfileScreen() {
   const { uploading, error: uploadError, pickAndUpload, takeAndUpload, deleteImage } = useProfileImage(user?.id);
 
   const fetchProfile = useCallback(async () => {
-    if (!user) return;
-
-    const { data: profileData } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-
-    if (profileData) {
-      setProfile(profileData);
+    if (!user) {
+      setLoading(false);
+      return;
     }
 
-    const { data: responsesData } = await supabase
-      .from('user_scenario_responses')
-      .select(`
-        scenario:scenarios(title, category),
-        option:scenario_options(option_text)
-      `)
-      .eq('user_id', user.id);
+    try {
+      const { data: profileData } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', user.id)
+        .single();
 
-    if (responsesData) {
-      const formattedResponses: ResponseSummary[] = responsesData.map((r: any) => ({
-        category: r.scenario?.category || '',
-        title: r.scenario?.title || '',
-        selected_option: r.option?.option_text || '',
-      }));
-      setResponses(formattedResponses);
+      if (profileData) {
+        setProfile(profileData);
+      }
+
+      const { data: responsesData } = await supabase
+        .from('user_scenario_responses')
+        .select(`
+          scenario:scenarios(title, category),
+          option:scenario_options(option_text)
+        `)
+        .eq('user_id', user.id);
+
+      if (responsesData) {
+        const formattedResponses: ResponseSummary[] = responsesData.map((r) => ({
+          category: (r.scenario as { category?: string })?.category || '',
+          title: (r.scenario as { title?: string })?.title || '',
+          selected_option: (r.option as { option_text?: string })?.option_text || '',
+        }));
+        setResponses(formattedResponses);
+      }
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   }, [user]);
 
-  useEffect(() => {
-    fetchProfile();
-  }, [fetchProfile]);
+  // 화면에 포커스될 때마다 프로필 새로고침
+  useFocusEffect(
+    useCallback(() => {
+      fetchProfile();
+    }, [fetchProfile])
+  );
 
   useEffect(() => {
     if (uploadError) {
@@ -219,15 +229,19 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>계정</Text>
         <View style={styles.menuCard}>
-          <TouchableOpacity style={styles.menuItem}>
+          <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/profile/edit')}>
             <Text style={styles.menuText}>프로필 수정</Text>
             <Text style={styles.menuArrow}>›</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.menuItem}>
+          <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/(tabs)')}>
+            <Text style={styles.menuText}>가치관 응답 수정</Text>
+            <Text style={styles.menuArrow}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/settings/notifications')}>
             <Text style={styles.menuText}>알림 설정</Text>
             <Text style={styles.menuArrow}>›</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.menuItem}>
+          <TouchableOpacity style={styles.menuItem} onPress={() => Alert.alert('준비 중', '이용약관은 곧 제공될 예정입니다.')}>
             <Text style={styles.menuText}>이용약관</Text>
             <Text style={styles.menuArrow}>›</Text>
           </TouchableOpacity>

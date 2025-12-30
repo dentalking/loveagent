@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,10 +8,17 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useScenarios, ScenarioWithOptions } from '../../hooks/useScenarios';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { useScenarios } from '../../hooks/useScenarios';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../lib/AuthContext';
+
+type ExistingResponse = {
+  scenario_id: number;
+  selected_option_id: number;
+  scenario: { title: string; category: string };
+  option: { option_text: string };
+};
 
 export default function ScenariosScreen() {
   const { user } = useAuth();
@@ -23,15 +30,10 @@ export default function ScenariosScreen() {
   const [completed, setCompleted] = useState(false);
   const [matchCount, setMatchCount] = useState(0);
   const [alreadyCompleted, setAlreadyCompleted] = useState(false);
+  const [existingResponses, setExistingResponses] = useState<ExistingResponse[]>([]);
+  const [isEditMode, setIsEditMode] = useState(false);
 
-  // Check if user already completed scenarios
-  useEffect(() => {
-    if (user) {
-      checkExistingResponses();
-    }
-  }, [user]);
-
-  async function checkExistingResponses() {
+  const checkExistingResponses = useCallback(async () => {
     if (!user) return;
 
     const { data: profile } = await supabase
@@ -41,8 +43,43 @@ export default function ScenariosScreen() {
       .single();
 
     if (profile?.is_profile_complete) {
+      // Load existing responses
+      const { data: responsesData } = await supabase
+        .from('user_scenario_responses')
+        .select(`
+          scenario_id,
+          selected_option_id,
+          scenario:scenarios(title, category),
+          option:scenario_options(option_text)
+        `)
+        .eq('user_id', user.id);
+
+      if (responsesData && responsesData.length > 0) {
+        setExistingResponses(responsesData as unknown as ExistingResponse[]);
+        // Pre-fill responses for edit mode
+        const prefilledResponses: Record<number, number> = {};
+        responsesData.forEach((r) => {
+          prefilledResponses[r.scenario_id] = r.selected_option_id;
+        });
+        setResponses(prefilledResponses);
+      }
       setAlreadyCompleted(true);
     }
+  }, [user]);
+
+  // Check on mount and when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      if (user) {
+        checkExistingResponses();
+      }
+    }, [user, checkExistingResponses])
+  );
+
+  function handleStartEdit() {
+    setIsEditMode(true);
+    setAlreadyCompleted(false);
+    setCurrentIndex(0);
   }
 
   if (loading) {
@@ -63,39 +100,76 @@ export default function ScenariosScreen() {
 
   if (alreadyCompleted) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.completedEmoji}>✅</Text>
-        <Text style={styles.completedTitle}>테스트 완료됨</Text>
-        <Text style={styles.completedText}>
-          이미 가치관 테스트를 완료했어요.{'\n'}
-          매칭 탭에서 결과를 확인하세요!
-        </Text>
-        <TouchableOpacity
-          style={styles.goToMatchesButton}
-          onPress={() => router.push('/(tabs)/matches')}
-        >
-          <Text style={styles.goToMatchesText}>매칭 확인하기</Text>
-        </TouchableOpacity>
-      </View>
+      <ScrollView style={styles.container} contentContainerStyle={styles.completedContent}>
+        <View style={styles.completedHeader}>
+          <Text style={styles.completedEmoji}>✅</Text>
+          <Text style={styles.completedTitle}>가치관 테스트 완료</Text>
+          <Text style={styles.completedSubtitle}>
+            매칭 탭에서 결과를 확인하세요!
+          </Text>
+        </View>
+
+        <View style={styles.responseSummary}>
+          <Text style={styles.responseSummaryTitle}>내 가치관 응답</Text>
+          {existingResponses.map((response, index) => (
+            <View key={index} style={styles.responseCard}>
+              <Text style={styles.responseCategory}>
+                {getCategoryLabel(response.scenario?.category || '')}
+              </Text>
+              <Text style={styles.responseQuestion}>{response.scenario?.title}</Text>
+              <Text style={styles.responseAnswer}>{response.option?.option_text}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.buttonGroup}>
+          <TouchableOpacity
+            style={styles.goToMatchesButton}
+            onPress={() => router.push('/(tabs)/matches')}
+          >
+            <Text style={styles.goToMatchesText}>매칭 확인하기</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.editButton}
+            onPress={handleStartEdit}
+          >
+            <Text style={styles.editButtonText}>응답 수정하기</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
     );
   }
 
   if (completed) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.completedEmoji}>🎉</Text>
-        <Text style={styles.completedTitle}>테스트 완료!</Text>
+        <Text style={styles.completedEmoji}>{isEditMode ? '✨' : '🎉'}</Text>
+        <Text style={styles.completedTitle}>
+          {isEditMode ? '응답 수정 완료!' : '테스트 완료!'}
+        </Text>
         <Text style={styles.completedText}>
-          {matchCount > 0
-            ? `${matchCount}명의 매칭을 찾았어요!`
-            : '당신의 가치관을 분석하고 있어요.'}{'\n'}
+          {isEditMode
+            ? '가치관 응답이 업데이트되었어요.\n새로운 매칭을 확인해보세요.'
+            : matchCount > 0
+              ? `${matchCount}명의 매칭을 찾았어요!`
+              : '당신의 가치관을 분석하고 있어요.'}{'\n'}
           매칭 탭에서 확인해보세요.
         </Text>
         <TouchableOpacity
           style={styles.goToMatchesButton}
+          onPress={() => {
+            setCompleted(false);
+            setIsEditMode(false);
+            checkExistingResponses();
+          }}
+        >
+          <Text style={styles.goToMatchesText}>내 응답 보기</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.goToMatchesButton, styles.secondaryButton]}
           onPress={() => router.push('/(tabs)/matches')}
         >
-          <Text style={styles.goToMatchesText}>매칭 보러가기</Text>
+          <Text style={styles.secondaryButtonText}>매칭 보러가기</Text>
         </TouchableOpacity>
       </View>
     );
@@ -356,6 +430,85 @@ const styles = StyleSheet.create({
   },
   goToMatchesText: {
     color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  secondaryButton: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#FF6B6B',
+    marginTop: 12,
+  },
+  secondaryButtonText: {
+    color: '#FF6B6B',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  completedContent: {
+    padding: 16,
+    paddingBottom: 32,
+  },
+  completedHeader: {
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    marginBottom: 16,
+  },
+  completedSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 4,
+  },
+  responseSummary: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+  },
+  responseSummaryTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 16,
+  },
+  responseCard: {
+    backgroundColor: '#F9F9F9',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  responseCategory: {
+    fontSize: 12,
+    color: '#FF6B6B',
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  responseQuestion: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  responseAnswer: {
+    fontSize: 14,
+    color: '#666',
+    lineHeight: 20,
+  },
+  buttonGroup: {
+    alignItems: 'center',
+  },
+  editButton: {
+    marginTop: 12,
+    backgroundColor: '#fff',
+    paddingHorizontal: 32,
+    paddingVertical: 14,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: '#FF6B6B',
+  },
+  editButtonText: {
+    color: '#FF6B6B',
     fontSize: 16,
     fontWeight: '600',
   },

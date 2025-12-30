@@ -56,6 +56,23 @@ export function useChat(matchId: string, userId: string) {
           });
         }
       )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'messages',
+          filter: `match_id=eq.${matchId}`,
+        },
+        (payload) => {
+          const updatedMessage = payload.new as Message;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === updatedMessage.id ? updatedMessage : m
+            )
+          );
+        }
+      )
       .subscribe();
 
     return () => {
@@ -75,12 +92,14 @@ export function useChat(matchId: string, userId: string) {
         .from('messages')
         .update({ is_read: true })
         .in('id', unreadIds)
-        .then(() => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              unreadIds.includes(m.id) ? { ...m, is_read: true } : m
-            )
-          );
+        .then(({ error }) => {
+          if (!error) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                unreadIds.includes(m.id) ? { ...m, is_read: true } : m
+              )
+            );
+          }
         });
     }
   }, [messages, userId]);
@@ -100,7 +119,6 @@ export function useChat(matchId: string, userId: string) {
     setSending(false);
 
     if (error) {
-      console.error('Failed to send message:', error);
       return false;
     }
 
