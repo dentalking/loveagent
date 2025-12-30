@@ -39,3 +39,4 @@ npm-debug.log*
 # Supabase
 supabase/.branches
 supabase/.temp
+.playwright-mcp/
